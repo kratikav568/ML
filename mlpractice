@@ -57,6 +57,11 @@ corr_values.plot(kind='barh', figsize = (10,6))
 
 # Data preprocessing 
 
+----# Scaling the features (required for svm performance)
+scaler = StandardScaler() 
+x_train_scaled = scalar.fit_transform(x_train)
+x_test_scaled = scaler.fit_transform(x_test)
+
 -------#standardizing continuous numerical features
 continuous_columns=data.select_dtypes(include=["float64"]).columns.tolist()
 scalar=StandardScaler()
@@ -148,9 +153,51 @@ roc_auc_dt = roc_auc_score(y_test, y_pred_dt)
 print('Decision tree roc-auc score:{0:,3f}'.format(roc_auc_dt))
 
 # Evaluate SVM 
-y_pred_svm = svm.decision_function(x_test)
+---evaluation_model=SVC(kernel="rbf",C=1.0, random_state=42)
+evaluation_model.fit(x_train_scaled, y_train)
+
+# Overall performance evaluation 
+y_pred=evaluation_model.predict(x_test_scaled)
+accuracy=accuracy_score(y_test, y_pred)
+
+print("=== SVM model evaluation report ===")
+print(f"overall model accuracy: {accuracy*100:.2f}%\n")
+print(classification_report(y_test,y_pred, target_names=iris.target_names))
+print("===================================")
+
+---y_pred_svm = svm.decision_function(x_test)
 
 roc_auc_svm=roc_auc_score(y_test,y_pred_svm)
 print('SVM roc-auc score:{0:.3f}'.format(roc_auc_svm))
+
+---# SVM Decision Boundary Plot
+
+X = iris.data[:, :2]                         # Take Sepal Length & Width
+X = StandardScaler().fit_transform(X)        # Standardize
+
+model = SVC(kernel="rbf")
+model.fit(X, y)                              # Train SVM
+
+# Create grid
+xx, yy = np.meshgrid(
+    np.arange(X[:, 0].min()-0.5, X[:, 0].max()+0.5, 0.02),
+    np.arange(X[:, 1].min()-0.5, X[:, 1].max()+0.5, 0.02)
+)
+
+# Predict grid points
+Z = model.predict(np.c_[xx.ravel(), yy.ravel()]).reshape(xx.shape)
+
+# Plot
+plt.figure(figsize=(8, 6))
+plt.contourf(xx, yy, Z, alpha=0.3, cmap="coolwarm")
+plt.scatter(X[:, 0], X[:, 1], c=y, cmap="coolwarm", edgecolors="black")
+
+plt.xlabel("Sepal Length (Standardized)")
+plt.ylabel("Sepal Width (Standardized)")
+plt.title("SVM Decision Boundary - Iris Dataset")
+plt.grid(True)
+plt.show()
+
+
 
 
