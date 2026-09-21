@@ -20,11 +20,12 @@ from sklearn.cluster import KMeans
 import warnings 
 warning.filterwarnings('ignore')
 
-
+=================================================================================
 # Importing the dataset 
 
 data = pd.read_csv('Path')
 data.head()
+===============================================================================
 
 # DATA EXPLORATION 
 
@@ -32,6 +33,84 @@ data.info()
 data.describe() 
 data.isnull().sum()
 data.columns
+
+# box plot to check outliers in numerical features
+num_col = obesity.select_dtypes(include= "float64").columns
+plt.figure(figsize=(20,15)) 
+obesity[num_col].boxplot()
+plt.show()
+
+# Checking for outliers 
+
+for col in ['Age', 'Salary']:
+    plt.figure(figsize=(10, 8))
+    plt.boxplot(customer[col].dropna())
+    plt.title(f"Distribution of {col}")
+    plt.ylabel(col)
+    plt.show()
+===============================================================================
+
+# Data Cleaning 
+
+customer = customer.drop_duplicates()
+customer
+
+- Changign charater values to sentence/str case
+customer['City'] = customer['City'].str.title()
+customer
+
+- replace missing value in data
+customer['Name']= customer['Name'].fillna("Unknown")
+customer
+
+- removing outliers 
+customer["Age"] = customer["Age"].fillna(customer["Age"].median())
+customer["Salary"] = customer["Salary"].fillna(customer["Salary"].median())
+
+- removing outliers for upper and lower case 
+Q1 = customer["Age"].quantile(0.25)
+Q3 = customer["Age"].quantile(0.75)
+
+IQR = Q3-Q1
+
+lower= Q1 - 1.5 * IQR
+upper= Q3 + 1.5 * IQR
+
+outliers = customer[(customer['Age'] < lower) | (customer['Age'] > upper)] 
+print(outliers)
+
+
+# Feature encoding 
+customer_purchase['Gender'] = customer_purchase['Gender'].map({
+    "M": 1, 
+    "F": 0
+})
+
+customer_purchase
+
+- Standardizing 
+
+scaler = StandardScaler()
+
+customer_purchase["Salary"] = scaler.fit_transform(customer_purchase[["Salary"]])
+
+customer_purchase
+
+feul_df = feul.copy()
+fuel_df = fuel_df.drop(['MAKE'	, 'MODEL', 'VEHICLECLASS', 'TRANSMISSION', 'FUELTYPE'], axis = 1) 
+fuel_df
+
+- heatmap
+
+corr_mat = fuel_df.corr() 
+
+sns.heatmap(corr_mat,
+            annot = True,
+            cmap = "coolwarm",
+            fmt= ".2f",
+            linewidths= 0.5)
+plt.title("Correlation Plot on Fuel Data")
+plt.show()
 
 # Visualize the distribution of the target variable to understand the class balance 
 
@@ -103,6 +182,30 @@ x= normalize(x, norm = 'l1')
 
 ------# Train test Split 
 x_train, x_test, y_train,y_test = train_test_split(x,y,test_size = 0.2, random_state = 42)
+
+---# Linear regression 
+# create a model object
+regressor=linear_model.LinearRegression()
+
+# train the model with training data
+regressor.fit(x_train,y_train)
+
+# print coefficient
+coef_=regressor.coef_
+intercept_=regressor.intercept_
+
+print("coeficient:",coef_)
+print("intercept:",intercept_)
+
+#without standard scaler 
+mean_= std_scaler.mean_
+std_devs=np.sqrt(std_scaler.var_)
+
+coef_original=coef_/std_devs
+intercept_original=intercept_-np.sum((mean_*coef_)/std_devs)
+
+print("coeficient:",coef_original)
+print("intercept:",intercept_original)
 
 =================================================================================
 -------# Logistic regression with ONE VS ALL 
@@ -198,6 +301,192 @@ plt.title("SVM Decision Boundary - Iris Dataset")
 plt.grid(True)
 plt.show()
 
+--------# Preduction probability 
+yhat_prob=LR.predict_proba(x_test)
+yhat_prob[:10]
 
+coefficients=pd.Series(LR.coef_[0], index=churn_df.columns[:-1])
+coefficients.sort_values().plot(kind="barh")
+plt.title("feature coefficients in logistic regression churn model")
+plt.xlabel("coefficient value")
+plt.show()
+
+log_loss(y_test,yhat_prob)
+
+churn_df=df[['tenure', 'age', 'address', 'income', 'ed', 'employ', 'equip','callcard','churn']]
+churn_df['churn']=df['churn'].astype("int")
+x=np.asarray(churn_df[['tenure', 'age', 'address', 'income', 'ed', 'employ', 'equip','callcard']])
+y=np.asarray(churn_df["churn"])
+x_norm=StandardScaler().fit(x).transform(x)
+x_train, x_test, y_train, y_test=train_test_split(x_norm, y, test_size=0.2, random_state=4)
+LR= LogisticRegression().fit(x_train,y_train)
+yhat=LR.predict(x_test)
+yhat_prob=LR.predict_proba(x_test)
+log_loss(y_test,yhat_prob) # to lower the log loss
+
+
+# Linear Regression 
+- import 
+- explore 
+- Feature engineering 
+cdf=df[['ENGINESIZE', 'CYLINDERS','FUELCONSUMPTION_COMB','CO2EMISSIONS']]
+cdf.sample(9)
+
+- visualization 
+# histogram
+viz=cdf
+viz.hist()
+plt.show()
+
+# Scatter plot 
+plt.scatter(cdf.FUELCONSUMPTION_COMB, cdf.CO2EMISSIONS, color="blue")
+plt.xlabel("Fuelconsumption_Comb")
+plt.ylabel("Emission")
+plt.show()
+
+plt.scatter(cdf.ENGINESIZE, cdf.CO2EMISSIONS, color="blue")
+plt.xlabel("Engine size")
+plt.ylabel("Emission")
+#plt.xlim(0,27)#to condense the data
+plt.show()
+
+plt.scatter(cdf.CYLINDERS, cdf.CO2EMISSIONS, color="blue")
+plt.xlabel("Fuelconsumption_Comb")
+plt.ylabel("Emission")
+plt.show()
+
+- extracting input feature and labels from the dataset 
+x= cdf.ENGINESIZE.to_numpy()
+y= cdf.CO2EMISSIONS.to_numpy()
+
+- train test splitting 
+x_train,x_test, y_train, y_test = train_test_split(x,y,test_size=0.2, random_state=42)
+
+type(x_train), np.shape(x_train)
+
+- simple linear regression 
+from sklearn import linear_model
+# create a model object
+regressor= linear_model.LinearRegression()
+
+#train the model on training data
+#x_train is a 1D array but sklear expect a 2D array
+regressor.fit(x_train.reshape(-1,1),y_train)
+
+print('coefficient:',regressor.coef_[0])
+print('Intercept:',regressor.intercept_)
+
+- visualization 
+# error 
+# use the predict method to make test prediction 
+y_pred= regressor.predict(x_test.reshape(-1,1))
+
+# evaluation
+print ("mean absolute error:%.2f" % mean_absolute_error(y_test,y_pred))
+print ("mean squared error:%.2f" % mean_squared_error(y_test,y_pred))
+print ("root mean squared error:%.2f" % np.sqrt(mean_squared_error(y_test,y_pred)))
+print ("r2-score:%.2f" % r2_score(y_test,y_pred))
+
+plt.scatter(x_train, y_train, color="red")
+plt.plot(x_train,regressor.coef_*x_train+regressor.intercept_,"-b")
+plt.xlabel("Engine size")
+plt.ylabel("CO2 Emission")
+plt.show()
+
+# Plotting the regression over test data instaed of training data 
+
+# Plot the actual test data
+plt.scatter(x_test, y_test, color='red', label='Actual Test Data')
+# Plot the regression line
+plt.plot(x_test, y_pred, color='blue', label='Regression Line')
+plt.title('Regression Model on Test Data')
+plt.xlabel('Engine Size')
+plt.ylabel('CO2 Emission')
+plt.legend()
+plt.show()
+
+------------ROADMAP
+START
+                   │
+                   ▼
+          1. Load the dataset
+                   │
+                   ▼
+          2. Understand the data
+             ├── head()
+             ├── info()
+             ├── describe()
+             └── columns
+                   │
+                   ▼
+          3. Clean the data
+             ├── Missing values
+             ├── Duplicates
+             ├── Outliers
+             └── Wrong data types
+                   │
+                   ▼
+          4. Explore the data
+             ├── Distribution
+             ├── Correlation
+             └── Target variable
+                   │
+                   ▼
+          5. Preprocess the data
+             ├── Encoding
+             ├── Scaling
+             └── Feature selection
+                   │
+                   ▼
+          6. Define X and y
+             X = Independent variables
+             y = Target variable
+                   │
+                   ▼
+          7. Train-Test Split
+             ├── Training data
+             └── Testing data
+                   │
+                   ▼
+          8. Select ML algorithm
+             │
+       ┌───────────┴────────────┐
+       ▼                        ▼
+   Regression              Classification
+       │                        │
+       ▼                        ▼
+ Linear Regression        Logistic Regression
+ Decision Tree Reg.       Decision Tree
+                          SVM
+                          OvA / OvO
+                   │
+                   ▼
+          9. Train the model
+             model.fit()
+                   │
+                   ▼
+          10. Make predictions
+             model.predict()
+                   │
+                   ▼
+          11. Evaluate model
+                   │
+       ┌───────────┴────────────┐
+       ▼                        ▼
+ Regression metrics       Classification metrics
+ MAE                       Accuracy
+ MSE                       Precision
+ RMSE                      Recall
+ R²                        F1
+                           ROC-AUC
+                   │
+                   ▼
+          12. Compare models
+                   │
+                   ▼
+          13. Interpret results
+                   │
+                   ▼
+                  END
 
 
