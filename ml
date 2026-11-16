@@ -1292,6 +1292,625 @@ plt.title("classification pipeline confusion matrix best model")
 plt.xlabel("Predicted")
 plt.ylabel("Actual")
 plt.show()
+============================================================================================================
+# Data Import and Configuration
+# Change these values for your dataset.
+DATA_PATH = "your_dataset.csv"       # Example: r"C:/Users/YourName/Downloads/data.csv"
+TARGET = "target_column"            # Set the target column name
+TASK = "classification"             # Choose: "classification" or "regression"
+TEST_SIZE = 0.20
+RANDOM_STATE = 42
+
+# CSV import. For Excel use: pd.read_excel("your_dataset.xlsx")
+df = pd.read_csv(DATA_PATH)
+
+print("Dataset shape:", df.shape)
+display(df.head())
+
+# Data Exploration
+df.info()
+display(df.describe(include="all").T)
+print("\nColumn names:", df.columns.tolist())
+print("\nData types:\n", df.dtypes)
+
+## Missing Value Check
+missing_summary = pd.DataFrame({
+    "Missing Count": df.isna().sum(),
+    "Missing %": (df.isna().mean() * 100).round(2)
+}).sort_values("Missing %", ascending=False)
+display(missing_summary)
+
+## Outlier Check (IQR summary for numeric features)
+numeric_columns = df.select_dtypes(include=np.number).columns.tolist()
+
+outlier_rows = []
+for col in numeric_columns:
+    q1 = df[col].quantile(0.25)
+    q3 = df[col].quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    count = ((df[col] < lower) | (df[col] > upper)).sum()
+    outlier_rows.append([col, lower, upper, count])
+
+display(pd.DataFrame(outlier_rows, columns=["Feature", "IQR Lower", "IQR Upper", "Outlier Count"]))
+
+## Duplicate Value Check
+print("Duplicate rows:", df.duplicated().sum())
+
+##Visualising Target and Feature Distributions
+# Set TARGET correctly before running this cell.
+if TARGET in df.columns:
+    plt.figure(figsize=(7, 4))
+    if df[TARGET].nunique(dropna=True) <= 20:
+        sns.countplot(data=df, x=TARGET)
+        plt.xticks(rotation=45)
+    else:
+        sns.histplot(data=df, x=TARGET, kde=True)
+    plt.title(f"Target distribution: {TARGET}")
+    plt.tight_layout()
+    plt.show()
+
+    feature_columns = [c for c in df.columns if c != TARGET]
+    numeric_features = df[feature_columns].select_dtypes(include=np.number).columns.tolist()
+    if numeric_features:
+        df[numeric_features].hist(figsize=(14, 10), bins=25)
+        plt.suptitle("Distribution of numeric features")
+        plt.tight_layout()
+        plt.show()
+else:
+    print("Update TARGET to a column present in the dataset.")
+
+    ## Correlation Plot of Features
+    corr_data = df.select_dtypes(include=np.number)
+if corr_data.shape[1] >= 2:
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(corr_data.corr(), cmap="coolwarm", center=0, annot=False)
+    plt.title("Correlation Heatmap")
+    plt.tight_layout()
+    plt.show()
+else:
+    print("At least two numeric columns are needed for a correlation heatmap.")
+
+##ML - WITHOUT PIPELINE 
+## Data Preprocessing – Split, Impute, IQR Cap, Remove Duplicates, Encode
+# Remove duplicate rows before splitting.
+df_clean = df.drop_duplicates().copy()
+
+# Remove rows where the target is missing.
+df_clean = df_clean.dropna(subset=[TARGET]).copy()
+
+X = df_clean.drop(columns=[TARGET]).copy()
+y = df_clean[TARGET].copy()
+
+# Encode classification target labels if they are text/categories.
+label_encoder = None
+if TASK == "classification" and (y.dtype == "object" or str(y.dtype).startswith("category")):
+    label_encoder = LabelEncoder()
+    y = pd.Series(label_encoder.fit_transform(y.astype(str)), index=y.index, name=TARGET)
+
+# Stratify only when classification classes have enough examples.
+stratify_y = y if TASK == "classification" and y.value_counts().min() >= 2 else None
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=stratify_y
+)
+
+numeric_features = X_train.select_dtypes(include=np.number).columns.tolist()
+categorical_features = X_train.select_dtypes(exclude=np.number).columns.tolist()
+
+print("Train shape:", X_train.shape, " Test shape:", X_test.shape)
+print("Numeric features:", numeric_features)
+print("Categorical features:", categorical_features)
+
+# 1. Missing-value imputation (fit on train, apply to train and test)
+num_imputer = SimpleImputer(strategy="median")
+cat_imputer = SimpleImputer(strategy="most_frequent")
+
+X_train_num = pd.DataFrame(num_imputer.fit_transform(X_train[numeric_features]),
+                           columns=numeric_features, index=X_train.index) if numeric_features else pd.DataFrame(index=X_train.index)
+X_test_num = pd.DataFrame(num_imputer.transform(X_test[numeric_features]),
+                          columns=numeric_features, index=X_test.index) if numeric_features else pd.DataFrame(index=X_test.index)
+
+X_train_cat = pd.DataFrame(cat_imputer.fit_transform(X_train[categorical_features]),
+                           columns=categorical_features, index=X_train.index) if categorical_features else pd.DataFrame(index=X_train.index)
+X_test_cat = pd.DataFrame(cat_imputer.transform(X_test[categorical_features]),
+                          columns=categorical_features, index=X_test.index) if categorical_features else pd.DataFrame(index=X_test.index)
+
+# 2. IQR method (capping) – bounds calculated from imputed training data only.
+iqr_bounds = {}
+for col in numeric_features:
+    q1 = X_train_num[col].quantile(0.25)
+    q3 = X_train_num[col].quantile(0.75)
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    iqr_bounds[col] = (lower, upper)
+    X_train_num[col] = X_train_num[col].clip(lower, upper)
+    X_test_num[col] = X_test_num[col].clip(lower, upper)
+
+# 3. One-hot encoding of categorical features.
+if categorical_features:
+    encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    X_train_cat_encoded = pd.DataFrame(
+        encoder.fit_transform(X_train_cat),
+        columns=encoder.get_feature_names_out(categorical_features), index=X_train.index
+    )
+    X_test_cat_encoded = pd.DataFrame(
+        encoder.transform(X_test_cat),
+        columns=encoder.get_feature_names_out(categorical_features), index=X_test.index
+    )
+else:
+    X_train_cat_encoded = pd.DataFrame(index=X_train.index)
+    X_test_cat_encoded = pd.DataFrame(index=X_test.index)
+
+# 4. Combine numeric and encoded categorical features.
+X_train_processed = pd.concat([X_train_num, X_train_cat_encoded], axis=1)
+X_test_processed = pd.concat([X_test_num, X_test_cat_encoded], axis=1)
+
+# 5. Scale features for distance/margin-based algorithms.
+standard_scaler = StandardScaler()
+X_train_scaled = pd.DataFrame(standard_scaler.fit_transform(X_train_processed),
+                              columns=X_train_processed.columns, index=X_train_processed.index)
+X_test_scaled = pd.DataFrame(standard_scaler.transform(X_test_processed),
+                             columns=X_test_processed.columns, index=X_test_processed.index)
+
+# Non-negative version for Multinomial Naive Bayes.
+minmax_scaler = MinMaxScaler()
+X_train_nonnegative = pd.DataFrame(minmax_scaler.fit_transform(X_train_processed),
+                                   columns=X_train_processed.columns, index=X_train_processed.index)
+X_test_nonnegative = pd.DataFrame(minmax_scaler.transform(X_test_processed),
+                                  columns=X_test_processed.columns, index=X_test_processed.index)
+
+print("Processed train shape:", X_train_processed.shape)
+print("Processed test shape:", X_test_processed.shape)
+
+## 1. Linear Regression (Regression target only)
+# Linear Regression uses unscaled encoded data for ordinary least squares.
+linear_model = LinearRegression()
+linear_model.fit(X_train_processed, y_train)
+y_pred_lr = linear_model.predict(X_test_processed)
+
+print("MAE:", mean_absolute_error(y_test, y_pred_lr))
+print("RMSE:", mean_squared_error(y_test, y_pred_lr) ** 0.5)
+print("R2:", r2_score(y_test, y_pred_lr))
+
+# Residual diagnostics
+residuals = y_test - y_pred_lr
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+sns.scatterplot(x=y_pred_lr, y=residuals, ax=axes[0])
+axes[0].axhline(0, color="red", linestyle="--")
+axes[0].set_title("Residuals vs Fitted")
+sns.histplot(residuals, kde=True, ax=axes[1])
+axes[1].set_title("Residual Distribution")
+plt.tight_layout()
+plt.show()
+
+# Coefficient importance
+lr_coef = pd.Series(linear_model.coef_, index=X_train_processed.columns).sort_values(key=np.abs, ascending=False)
+display(lr_coef.to_frame("Coefficient"))
+
+## 2. Logistic Regression (Classification target only)
+logistic_model = LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)
+logistic_grid = GridSearchCV(
+    logistic_model,
+    {"C": [0.01, 0.1, 1, 10], "solver": ["lbfgs"]},
+    cv=5, scoring="f1_weighted", n_jobs=-1
+)
+logistic_grid.fit(X_train_scaled, y_train)
+logistic_best = logistic_grid.best_estimator_
+y_pred_lr_clf = logistic_best.predict(X_test_scaled)
+
+print("Best parameters:", logistic_grid.best_params_)
+print("Accuracy:", accuracy_score(y_test, y_pred_lr_clf))
+print(classification_report(y_test, y_pred_lr_clf, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred_lr_clf)
+plt.title("Logistic Regression – Confusion Matrix")
+plt.show()
+
+logistic_coef = pd.Series(logistic_best.coef_[0] if len(logistic_best.coef_) == 1 else np.abs(logistic_best.coef_).mean(axis=0), index=X_train_scaled.columns)
+display(logistic_coef.sort_values(ascending=False).head(20).to_frame("Coefficient / Mean absolute coefficient"))
+
+## 3. Decision Tree (Classifier or Regressor)
+if TASK == "classification":
+    tree_model = DecisionTreeClassifier(random_state=RANDOM_STATE, class_weight="balanced")
+    tree_scoring = "f1_weighted"
+else:
+    tree_model = DecisionTreeRegressor(random_state=RANDOM_STATE)
+    tree_scoring = "r2"
+
+tree_grid = GridSearchCV(
+    tree_model,
+    {"max_depth": [None, 3, 5, 8], "min_samples_split": [2, 5, 10], "min_samples_leaf": [1, 2, 4]},
+    cv=5, scoring=tree_scoring, n_jobs=-1
+)
+tree_grid.fit(X_train_processed, y_train)
+tree_best = tree_grid.best_estimator_
+y_pred_tree = tree_best.predict(X_test_processed)
+print("Best parameters:", tree_grid.best_params_)
+
+if TASK == "classification":
+    print("Accuracy:", accuracy_score(y_test, y_pred_tree))
+    print(classification_report(y_test, y_pred_tree, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test, y_pred_tree)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test, y_pred_tree))
+    print("RMSE:", mean_squared_error(y_test, y_pred_tree) ** 0.5)
+    print("R2:", r2_score(y_test, y_pred_tree))
+
+pd.Series(tree_best.feature_importances_, index=X_train_processed.columns).sort_values(ascending=False).head(20).plot(kind="barh", figsize=(8, 6))
+plt.title("Decision Tree Feature Importance")
+plt.gca().invert_yaxis()
+plt.show()
+
+## 4. K-Means Clustering (Unsupervised)
+# K-Means does not use y. Use scaled features and select k using inertia/silhouette.
+inertias = []
+silhouette_scores = []
+k_values = range(2, 8)
+for k in k_values:
+    km = KMeans(n_clusters=k, random_state=RANDOM_STATE, n_init=10)
+    labels = km.fit_predict(X_train_scaled)
+    inertias.append(km.inertia_)
+    silhouette_scores.append(silhouette_score(X_train_scaled, labels))
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].plot(list(k_values), inertias, marker="o")
+axes[0].set_title("Elbow Method")
+axes[0].set_xlabel("Number of clusters (k)")
+axes[1].plot(list(k_values), silhouette_scores, marker="o")
+axes[1].set_title("Silhouette Score")
+axes[1].set_xlabel("Number of clusters (k)")
+plt.tight_layout()
+plt.show()
+
+# Set the selected cluster count after inspecting the plots.
+BEST_K = 3
+kmeans_model = KMeans(n_clusters=BEST_K, random_state=RANDOM_STATE, n_init=10)
+train_clusters = kmeans_model.fit_predict(X_train_scaled)
+test_clusters = kmeans_model.predict(X_test_scaled)
+print("Test cluster counts:\n", pd.Series(test_clusters).value_counts().sort_index())
+print("Test silhouette score:", silhouette_score(X_test_scaled, test_clusters))
+
+## 5. Support Vector Machine – SVC / SVR
+if TASK == "classification":
+    svm_model = SVC(class_weight="balanced")
+    svm_params = {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"], "gamma": ["scale", "auto"]}
+    svm_scoring = "f1_weighted"
+else:
+    svm_model = SVR()
+    svm_params = {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"], "epsilon": [0.1, 0.2]}
+    svm_scoring = "r2"
+
+svm_grid = GridSearchCV(svm_model, svm_params, cv=5, scoring=svm_scoring, n_jobs=-1)
+svm_grid.fit(X_train_scaled, y_train)
+svm_best = svm_grid.best_estimator_
+y_pred_svm = svm_best.predict(X_test_scaled)
+print("Best parameters:", svm_grid.best_params_)
+if TASK == "classification":
+    print("Accuracy:", accuracy_score(y_test, y_pred_svm))
+    print(classification_report(y_test, y_pred_svm, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test, y_pred_svm)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test, y_pred_svm))
+    print("RMSE:", mean_squared_error(y_test, y_pred_svm) ** 0.5)
+    print("R2:", r2_score(y_test, y_pred_svm))
+
+## 6. K-Nearest Neighbors – KNN
+if TASK == "classification":
+    knn_model = KNeighborsClassifier()
+    knn_params = {"n_neighbors": [3, 5, 7, 9, 11], "weights": ["uniform", "distance"], "p": [1, 2]}
+    knn_scoring = "f1_weighted"
+else:
+    knn_model = KNeighborsRegressor()
+    knn_params = {"n_neighbors": [3, 5, 7, 9, 11], "weights": ["uniform", "distance"], "p": [1, 2]}
+    knn_scoring = "r2"
+
+knn_grid = GridSearchCV(knn_model, knn_params, cv=5, scoring=knn_scoring, n_jobs=-1)
+knn_grid.fit(X_train_scaled, y_train)
+knn_best = knn_grid.best_estimator_
+y_pred_knn = knn_best.predict(X_test_scaled)
+print("Best parameters:", knn_grid.best_params_)
+if TASK == "classification":
+    print("Accuracy:", accuracy_score(y_test, y_pred_knn))
+    print(classification_report(y_test, y_pred_knn, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test, y_pred_knn)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test, y_pred_knn))
+    print("RMSE:", mean_squared_error(y_test, y_pred_knn) ** 0.5)
+    print("R2:", r2_score(y_test, y_pred_knn))
+
+## 7. Multinomial Naive Bayes (Classification only)
+# MultinomialNB requires non-negative inputs. X_train_nonnegative uses MinMaxScaler.
+mnb_model = MultinomialNB()
+mnb_model.fit(X_train_nonnegative, y_train)
+y_pred_mnb = mnb_model.predict(X_test_nonnegative)
+print("Accuracy:", accuracy_score(y_test, y_pred_mnb))
+print(classification_report(y_test, y_pred_mnb, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred_mnb)
+plt.title("Multinomial Naive Bayes – Confusion Matrix")
+plt.show()
+
+## 8. Gaussian Naive Bayes (Classification only)
+gnb_model = GaussianNB()
+gnb_model.fit(X_train_scaled, y_train)
+y_pred_gnb = gnb_model.predict(X_test_scaled)
+print("Accuracy:", accuracy_score(y_test, y_pred_gnb))
+print(classification_report(y_test, y_pred_gnb, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred_gnb)
+plt.title("Gaussian Naive Bayes – Confusion Matrix")
+plt.show()
+
+## Model Diagnostics – Classification ROC Curve (Binary classification)
+# Run after fitting a classifier that supports predict_proba or decision_function.
+# Change `diagnostic_model` to logistic_best, tree_best, knn_best, etc.
+diagnostic_model = logistic_best
+if TASK == "classification" and len(np.unique(y_test)) == 2:
+    if hasattr(diagnostic_model, "predict_proba"):
+        diagnostic_scores = diagnostic_model.predict_proba(X_test_scaled)[:, 1] if diagnostic_model is logistic_best else diagnostic_model.predict_proba(X_test_processed)[:, 1]
+    elif hasattr(diagnostic_model, "decision_function"):
+        diagnostic_scores = diagnostic_model.decision_function(X_test_scaled)
+    else:
+        diagnostic_scores = None
+    if diagnostic_scores is not None:
+        fpr, tpr, _ = roc_curve(y_test, diagnostic_scores)
+        print("ROC-AUC:", roc_auc_score(y_test, diagnostic_scores))
+        plt.plot(fpr, tpr, label="ROC curve")
+        plt.plot([0, 1], [0, 1], linestyle="--")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("ROC Curve")
+        plt.legend()
+        plt.show()
+else:
+    print("ROC curve is shown only for binary classification with probability/score output.")
+
+## Learning Curve (choose the model and matching feature matrix)
+# Example below uses Logistic Regression for classification and Linear Regression for regression.
+if TASK == "classification":
+    learning_model = LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE)
+    learning_X = X_train_scaled
+    learning_scoring = "f1_weighted"
+else:
+    learning_model = LinearRegression()
+    learning_X = X_train_processed
+    learning_scoring = "r2"
+
+train_sizes, train_scores, validation_scores = learning_curve(
+    learning_model, learning_X, y_train, cv=5, scoring=learning_scoring,
+    train_sizes=np.linspace(0.1, 1.0, 5), n_jobs=-1
+)
+plt.plot(train_sizes, train_scores.mean(axis=1), marker="o", label="Training score")
+plt.plot(train_sizes, validation_scores.mean(axis=1), marker="o", label="Cross-validation score")
+plt.xlabel("Training examples")
+plt.ylabel(learning_scoring)
+plt.title("Learning Curve")
+plt.legend()
+plt.show()
+
+## Feature Importance and SHAP (Optional)
+# Built-in tree feature importance (run after Decision Tree training)
+if "tree_best" in globals() and hasattr(tree_best, "feature_importances_"):
+    tree_importance = pd.Series(tree_best.feature_importances_, index=X_train_processed.columns).sort_values(ascending=False)
+    display(tree_importance.head(20).to_frame("Importance"))
+
+# Optional SHAP example for a tree model. Install with: %pip install shap
+# import shap
+# explainer = shap.TreeExplainer(tree_best)
+# shap_values = explainer.shap_values(X_test_processed)
+# shap.summary_plot(shap_values, X_test_processed)
+
+# For models without native feature_importances_, use permutation importance:
+# from sklearn.inspection import permutation_importance
+# perm = permutation_importance(tree_best, X_test_processed, y_test, n_repeats=10, random_state=42)
+# display(pd.Series(perm.importances_mean, index=X_test_processed.columns).sort_values(ascending=False).head(20))
+
+# SECTION B – Machine Learning With Pipeline
+
+# Pipeline Data Split and Preprocessor
+# Rebuild X and y from the de-duplicated source data.
+df_pipe = df.drop_duplicates().dropna(subset=[TARGET]).copy()
+X_pipe = df_pipe.drop(columns=[TARGET])
+y_pipe = df_pipe[TARGET].copy()
+
+pipe_label_encoder = None
+if TASK == "classification" and (y_pipe.dtype == "object" or str(y_pipe.dtype).startswith("category")):
+    pipe_label_encoder = LabelEncoder()
+    y_pipe = pd.Series(pipe_label_encoder.fit_transform(y_pipe.astype(str)), index=y_pipe.index, name=TARGET)
+
+stratify_pipe = y_pipe if TASK == "classification" and y_pipe.value_counts().min() >= 2 else None
+X_train_pipe, X_test_pipe, y_train_pipe, y_test_pipe = train_test_split(
+    X_pipe, y_pipe, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=stratify_pipe
+)
+
+num_cols_pipe = X_train_pipe.select_dtypes(include=np.number).columns.tolist()
+cat_cols_pipe = X_train_pipe.select_dtypes(exclude=np.number).columns.tolist()
+
+numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("onehot", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer(transformers=[
+    ("num", numeric_transformer, num_cols_pipe),
+    ("cat", categorical_transformer, cat_cols_pipe)
+])
+print("Numeric columns:", num_cols_pipe)
+print("Categorical columns:", cat_cols_pipe)
+
+## 1. Linear Regression Pipeline
+linear_pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", LinearRegression())])
+linear_pipe.fit(X_train_pipe, y_train_pipe)
+y_pred_linear_pipe = linear_pipe.predict(X_test_pipe)
+print("MAE:", mean_absolute_error(y_test_pipe, y_pred_linear_pipe))
+print("RMSE:", mean_squared_error(y_test_pipe, y_pred_linear_pipe) ** 0.5)
+print("R2:", r2_score(y_test_pipe, y_pred_linear_pipe))
+
+## 2. Logistic Regression Pipeline + GridSearchCV
+logistic_pipe = Pipeline(steps=[
+    ("preprocess", preprocessor),
+    ("model", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE))
+])
+logistic_pipe_grid = GridSearchCV(
+    logistic_pipe, {"model__C": [0.01, 0.1, 1, 10]},
+    cv=5, scoring="f1_weighted", n_jobs=-1
+)
+logistic_pipe_grid.fit(X_train_pipe, y_train_pipe)
+y_pred_logistic_pipe = logistic_pipe_grid.predict(X_test_pipe)
+print("Best parameters:", logistic_pipe_grid.best_params_)
+print(classification_report(y_test_pipe, y_pred_logistic_pipe, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_logistic_pipe)
+plt.show()
+
+## 3. Decision Tree Pipeline + GridSearchCV
+if TASK == "classification":
+    tree_pipe_model = DecisionTreeClassifier(random_state=RANDOM_STATE, class_weight="balanced")
+    tree_pipe_score = "f1_weighted"
+else:
+    tree_pipe_model = DecisionTreeRegressor(random_state=RANDOM_STATE)
+    tree_pipe_score = "r2"
+
+tree_pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", tree_pipe_model)])
+tree_pipe_grid = GridSearchCV(
+    tree_pipe,
+    {"model__max_depth": [None, 3, 5, 8], "model__min_samples_split": [2, 5, 10]},
+    cv=5, scoring=tree_pipe_score, n_jobs=-1
+)
+tree_pipe_grid.fit(X_train_pipe, y_train_pipe)
+y_pred_tree_pipe = tree_pipe_grid.predict(X_test_pipe)
+print("Best parameters:", tree_pipe_grid.best_params_)
+if TASK == "classification":
+    print(classification_report(y_test_pipe, y_pred_tree_pipe, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_tree_pipe)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test_pipe, y_pred_tree_pipe))
+    print("RMSE:", mean_squared_error(y_test_pipe, y_pred_tree_pipe) ** 0.5)
+    print("R2:", r2_score(y_test_pipe, y_pred_tree_pipe))
+
+## 4. K-Means Pipeline (Unsupervised)
+kmeans_pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", KMeans(n_clusters=3, random_state=RANDOM_STATE, n_init=10))])
+kmeans_pipe.fit(X_train_pipe)
+pipe_train_clusters = kmeans_pipe.predict(X_train_pipe)
+pipe_test_clusters = kmeans_pipe.predict(X_test_pipe)
+print("Train cluster counts:\n", pd.Series(pipe_train_clusters).value_counts().sort_index())
+print("Test cluster counts:\n", pd.Series(pipe_test_clusters).value_counts().sort_index())
+
+### Yellowbrick K-Means Cluster Selection
+# Yellowbrick KElbowVisualizer is applied to the transformed training matrix.
+# This visualizes candidate cluster counts; fit the final clustering Pipeline separately.
+from yellowbrick.cluster import KElbowVisualizer, SilhouetteVisualizer
+
+X_train_pipe_transformed = preprocessor.fit_transform(X_train_pipe)
+kmeans_for_viz = KMeans(random_state=RANDOM_STATE, n_init=10)
+elbow_visualizer = KElbowVisualizer(kmeans_for_viz, k=(2, 10), metric="distortion")
+elbow_visualizer.fit(X_train_pipe_transformed)
+elbow_visualizer.show()
+
+# Set BEST_K based on the elbow/silhouette evidence and use it in kmeans_pipe.
+
+## 5. SVM Pipeline + GridSearchCV
+if TASK == "classification":
+    svm_pipe_model = SVC(class_weight="balanced")
+    svm_pipe_params = {"model__C": [0.1, 1, 10], "model__kernel": ["linear", "rbf"]}
+    svm_pipe_score = "f1_weighted"
+else:
+    svm_pipe_model = SVR()
+    svm_pipe_params = {"model__C": [0.1, 1, 10], "model__kernel": ["linear", "rbf"]}
+    svm_pipe_score = "r2"
+svm_pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", svm_pipe_model)])
+svm_pipe_grid = GridSearchCV(svm_pipe, svm_pipe_params, cv=5, scoring=svm_pipe_score, n_jobs=-1)
+svm_pipe_grid.fit(X_train_pipe, y_train_pipe)
+y_pred_svm_pipe = svm_pipe_grid.predict(X_test_pipe)
+print("Best parameters:", svm_pipe_grid.best_params_)
+if TASK == "classification":
+    print(classification_report(y_test_pipe, y_pred_svm_pipe, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_svm_pipe)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test_pipe, y_pred_svm_pipe))
+    print("RMSE:", mean_squared_error(y_test_pipe, y_pred_svm_pipe) ** 0.5)
+    print("R2:", r2_score(y_test_pipe, y_pred_svm_pipe))
+
+## 6. KNN Pipeline + GridSearchCV
+if TASK == "classification":
+    knn_pipe_model = KNeighborsClassifier()
+    knn_pipe_score = "f1_weighted"
+else:
+    knn_pipe_model = KNeighborsRegressor()
+    knn_pipe_score = "r2"
+knn_pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", knn_pipe_model)])
+knn_pipe_grid = GridSearchCV(
+    knn_pipe,
+    {"model__n_neighbors": [3, 5, 7, 9, 11], "model__weights": ["uniform", "distance"]},
+    cv=5, scoring=knn_pipe_score, n_jobs=-1
+)
+knn_pipe_grid.fit(X_train_pipe, y_train_pipe)
+y_pred_knn_pipe = knn_pipe_grid.predict(X_test_pipe)
+print("Best parameters:", knn_pipe_grid.best_params_)
+if TASK == "classification":
+    print(classification_report(y_test_pipe, y_pred_knn_pipe, zero_division=0))
+    ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_knn_pipe)
+    plt.show()
+else:
+    print("MAE:", mean_absolute_error(y_test_pipe, y_pred_knn_pipe))
+    print("RMSE:", mean_squared_error(y_test_pipe, y_pred_knn_pipe) ** 0.5)
+    print("R2:", r2_score(y_test_pipe, y_pred_knn_pipe))
+
+## 7. Multinomial Naive Bayes Pipeline
+# MultinomialNB must receive non-negative values. Use MinMaxScaler after preprocessing.
+mnb_preprocessor = ColumnTransformer(transformers=[
+    ("num", Pipeline(steps=[("imputer", SimpleImputer(strategy="median")), ("scale", MinMaxScaler())]), num_cols_pipe),
+    ("cat", Pipeline(steps=[("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore"))]), cat_cols_pipe)
+])
+mnb_pipe = Pipeline(steps=[("preprocess", mnb_preprocessor), ("model", MultinomialNB())])
+mnb_pipe_grid = GridSearchCV(mnb_pipe, {"model__alpha": [0.1, 0.5, 1.0, 2.0]}, cv=5, scoring="f1_weighted", n_jobs=-1)
+mnb_pipe_grid.fit(X_train_pipe, y_train_pipe)
+y_pred_mnb_pipe = mnb_pipe_grid.predict(X_test_pipe)
+print("Best parameters:", mnb_pipe_grid.best_params_)
+print(classification_report(y_test_pipe, y_pred_mnb_pipe, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_mnb_pipe)
+plt.show()
+
+## 8. Gaussian Naive Bayes Pipeline
+# GaussianNB expects dense numeric input; OneHotEncoder is configured as dense here.
+gnb_preprocessor = ColumnTransformer(transformers=[
+    ("num", Pipeline(steps=[("imputer", SimpleImputer(strategy="median")), ("scale", StandardScaler())]), num_cols_pipe),
+    ("cat", Pipeline(steps=[("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), cat_cols_pipe)
+], sparse_threshold=0)
+gnb_pipe = Pipeline(steps=[("preprocess", gnb_preprocessor), ("model", GaussianNB())])
+gnb_pipe.fit(X_train_pipe, y_train_pipe)
+y_pred_gnb_pipe = gnb_pipe.predict(X_test_pipe)
+print(classification_report(y_test_pipe, y_pred_gnb_pipe, zero_division=0))
+ConfusionMatrixDisplay.from_predictions(y_test_pipe, y_pred_gnb_pipe)
+plt.show()
+
+## Pipeline Learning Curve
+# Example: classification Logistic Regression pipeline or regression Linear Regression pipeline.
+if TASK == "classification":
+    curve_estimator = Pipeline(steps=[("preprocess", preprocessor), ("model", LogisticRegression(max_iter=2000))])
+    curve_metric = "f1_weighted"
+else:
+    curve_estimator = Pipeline(steps=[("preprocess", preprocessor), ("model", LinearRegression())])
+    curve_metric = "r2"
+
+sizes, train_sc, valid_sc = learning_curve(
+    curve_estimator, X_train_pipe, y_train_pipe, cv=5, scoring=curve_metric,
+    train_sizes=np.linspace(0.1, 1.0, 5), n_jobs=-1
+)
+plt.plot(sizes, train_sc.mean(axis=1), marker="o", label="Train")
+plt.plot(sizes, valid_sc.mean(axis=1), marker="o", label="Cross-validation")
+plt.xlabel("Training examples")
+plt.ylabel(curve_metric)
+plt.title("Pipeline Learning Curve")
+plt.legend()
+plt.show()
 
 
 
